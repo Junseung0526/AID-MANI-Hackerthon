@@ -18,6 +18,13 @@
   let watchId = null;
   let realtimeChannel = null;
 
+  // 사용자 포인트 (로그인 없이 로컬 스토리지 사용)
+  let userPoints = 0;
+  let showPointsGainModal = false;
+  let pointsGainedMessage = '';
+
+  // 네비게이션 관련
+
   // 네비게이션 관련
   let showNavigationPanel = false;
   let destinationAddress = '';
@@ -679,6 +686,20 @@
 
       alert('제보가 성공적으로 등록되었습니다!');
 
+      // 제보 성공 시 포인트 지급 (로컬 스토리지)
+      const pointsAwarded = 10;
+      userPoints += pointsAwarded;
+      localStorage.setItem('userPoints', userPoints.toString());
+      console.log(`${pointsAwarded} 포인트 적립! 현재 포인트: ${userPoints}`);
+
+      // 포인트 획득 모달 표시
+      pointsGainedMessage = `${pointsAwarded} 포인트 획득! 🎉`;
+      showPointsGainModal = true;
+      setTimeout(() => {
+        showPointsGainModal = false;
+        pointsGainedMessage = '';
+      }, 3000); // 3초 후 사라짐
+
       // 데이터 새로고침
       loadHazards();
     } catch (error) {
@@ -715,11 +736,21 @@
     // Leaflet 지도 초기화
     map = L.map('map').setView([userLocation.lat, userLocation.lng], 13);
 
+
     // OpenStreetMap 타일 레이어 추가
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors',
       maxZoom: 19
     }).addTo(map);
+
+    // 로컬 스토리지에서 포인트 로드
+    const storedPoints = localStorage.getItem('userPoints');
+    if (storedPoints) {
+      userPoints = parseInt(storedPoints, 10);
+    } else {
+      userPoints = 0;
+      localStorage.setItem('userPoints', '0');
+    }
 
     // 사용자 위치 추적 시작
     if ('geolocation' in navigator) {
@@ -741,22 +772,21 @@
     // 데이터 로드 및 실시간 구독
     loadHazards();
     subscribeToHazards();
-  });
 
-  // 컴포넌트 언마운트
-  onDestroy(() => {
-    if (watchId) {
-      navigator.geolocation.clearWatch(watchId);
-    }
-    if (realtimeChannel) {
-      supabase.removeChannel(realtimeChannel);
-    }
-    if (routingControl && map) {
-      map.removeControl(routingControl);
-    }
-    if (map) {
-      map.remove();
-    }
+    return () => { // onDestroy 대신 onMount에서 반환 함수로 클린업 처리
+      if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+      if (realtimeChannel) {
+        supabase.removeChannel(realtimeChannel);
+      }
+      if (routingControl && map) {
+        map.removeControl(routingControl);
+      }
+      if (map) {
+        map.remove();
+      }
+    };
   });
 </script>
 
@@ -766,6 +796,13 @@
 </svelte:head>
 
 <main class="relative w-full h-full">
+  <!-- 사용자 포인트 표시 -->
+  <div class="fixed top-4 left-4 z-[1000] flex items-center bg-white p-3 rounded-full shadow-lg">
+    <span class="text-gray-800 font-semibold">
+      내 포인트: <span class="text-blue-600">{userPoints}P</span>
+    </span>
+  </div>
+
   <!-- 경고 상태 바 -->
   <div
     class="alert-bar absolute top-0 left-0 right-0 z-[1000] px-4 py-3 text-white text-center font-semibold shadow-lg"
@@ -1149,6 +1186,13 @@
       </div>
     </div>
   {/if}
+
+  <!-- 포인트 획득 모달 -->
+  {#if showPointsGainModal}
+    <div class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[1001] bg-green-500 text-white px-8 py-5 rounded-lg shadow-xl text-3xl font-bold animate-fade-in-out">
+      {pointsGainedMessage}
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -1164,5 +1208,29 @@
 
   :global(.leaflet-routing-container) {
     display: none;
+  }
+
+  /* Custom animation for point gain modal */
+  @keyframes fade-in-out {
+    0% {
+      opacity: 0;
+      transform: translate(-50%, -30%); /* Slightly off-center initially */
+    }
+    10% {
+      opacity: 1;
+      transform: translate(-50%, -50%); /* Centered */
+    }
+    90% {
+      opacity: 1;
+      transform: translate(-50%, -50%); /* Centered */
+    }
+    100% {
+      opacity: 0;
+      transform: translate(-50%, -70%); /* Fades out slightly upwards */
+    }
+  }
+
+  .animate-fade-in-out {
+    animation: fade-in-out 3s ease-in-out forwards;
   }
 </style>
