@@ -168,9 +168,7 @@
     userLocation = { lat, lng };
 
     if (map) {
-      if (!isNavigating) {
-        map.setView([lat, lng], map.getZoom());
-      }
+
 
       if (userMarker) {
         userMarker.setLatLng([lat, lng]);
