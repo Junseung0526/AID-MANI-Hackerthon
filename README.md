@@ -1,43 +1,72 @@
-# Svelte + Vite
+![App_logo](https://github.com/user-attachments/assets/49928865-1b44-4f1d-80e4-eebfa9f54289)
 
-This template should help get you started developing with Svelte in Vite.
+# 🛡️ 실시간 도로 위험 제보 및 AI 안전 경로 안내 서비스
 
-## Recommended IDE Setup
+이 프로젝트는 사용자가 도로 위의 위험 요소(포트홀, 낙석, 결빙 등)를 실시간으로 제보하고, 수집된 데이터를 바탕으로 **Gemini AI**가 목적지까지의 가장 안전한 경로를 분석하여 추천해주는 웹 애플리케이션입니다.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+---
 
-## Need an official Svelte framework?
+## ✨ 주요 기능
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+* **실시간 위험 제보**: 사용자가 현장에서 사진과 상세 설명을 포함해 위험 요소를 즉시 제보할 수 있습니다.
+* **Gemini AI 경로 분석**: 목적지 검색 시 생성된 여러 경로를 Gemini AI가 분석하여 위험도 점수와 안전도 점수를 계산하고 최적의 경로를 추천합니다.
+* **위험 지역 실시간 알림**: 사용자의 현재 위치를 추적하여 주변 500m 이내에 위험 지역이 있을 경우 경고 바와 아이콘을 통해 즉각적인 주의를 환기합니다.
+* **보상 시스템 (포인트)**: 위험 제보 성공 시 사용자에게 포인트(10P)를 지급하여 커뮤니티 참여를 독려합니다.
+* **인터랙티브 지도**: Leaflet 기반 지도를 통해 내 위치, 위험 지역 마커, 그리고 AI 추천 경로를 시각적으로 확인할 수 있습니다.
 
-## Technical considerations
+---
 
-**Why use this over SvelteKit?**
+## 🛠 기술 스택
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
+* **Frontend**: Svelte 5, Vite
+* **Styling**: Tailwind CSS, Lucide Svelte (Icons)
+* **Maps & Navigation**: Leaflet, Leaflet Routing Machine
+* **Backend & Storage**: Supabase (DB, Real-time Subscription, Storage)
+* **Artificial Intelligence**: Google Gemini API (`gemini-2.0-flash` 모델 사용)
 
-This template contains as little as possible to get started with Vite + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
+---
 
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
+## 🚀 시작하기
 
-**Why include `.vscode/extensions.json`?**
+### 1. 환경 변수 설정
+프로젝트 루트 디렉토리에 `.env` 파일을 생성하고 아래의 API 키들을 설정해야 합니다.
 
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `checkJs` in the JS template?**
-
-It is likely that most cases of changing variable types in runtime are likely to be accidental, rather than deliberate. This provides advanced typechecking out of the box. Should you like to take advantage of the dynamically-typed nature of JavaScript, it is trivial to change the configuration.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/sveltejs/svelte-hmr/tree/master/packages/svelte-hmr#preservation-of-local-state).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```js
-// store.js
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
+```env
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_GEMINI_API_KEY=your_gemini_api_key
 ```
+
+### 2. 의존성 설치
+```bash
+npm install
+```
+
+### 3. 개발 서버 실행
+```bash
+npm run dev
+```
+
+## 📂 주요 파일 구조
+
+* **src/App.svelte**: 지도 초기화, 실시간 위치 추적, 제보 폼 및 네비게이션 UI/UX 로직이 포함된 메인 컴포넌트입니다.
+* **src/lib/gemini.js**: Gemini AI를 연동하여 경로별 위험 정보를 분석하고 추천 결과를 반환하는 로직입니다.
+* **src/lib/supabase.js**: Supabase 데이터베이스 및 스토리지 사용을 위한 클라이언트 설정 파일입니다.
+* **dummy-data.sql**: 데이터베이스 테이블 구조와 초기 테스트용 위험 지역 데이터를 포함하고 있습니다.
+
+---
+
+## ⚠️ 위험 유형 및 심각도 기준
+
+시스템은 제보된 위험의 유형에 따라 심각도(Severity) 점수를 부여하여 경로 안전도를 계산합니다.
+
+| 위험 유형 | 심각도 | 설명 |
+| :--- | :---: | :--- |
+| 사고 (Accident) | 10 | 즉각적인 우회 필요 |
+| 낙석 (Rockfall) | 5 | 매우 위험한 구간 |
+| 침수 (Flood) | 5 | 통행 불가 가능성 높음 |
+| 결빙 (Ice) | 4 | 미끄럼 사고 주의 |
+| 포트홀 (Pothole) | 3 | 타이어 및 하체 파손 주의 |
+| 기타 (Other) | 2 | 일반적인 도로 주의 사항 |
+
+> 본 프로젝트는 Svelte와 Vite 템플릿을 기반으로 개발되었습니다.
