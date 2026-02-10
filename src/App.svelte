@@ -689,6 +689,27 @@
     }
   }
 
+  // 현재 위치로 이동
+  function goToCurrentUserLocation() {
+    if (map && 'geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          updateUserLocation(lat, lng); // 마커 위치 업데이트
+          map.setView([lat, lng], map.getZoom()); // 지도 재중앙화
+        },
+        (error) => {
+          console.error('현재 위치를 가져올 수 없습니다:', error);
+          alert('현재 위치를 가져올 수 없습니다. 위치 권한을 확인해주세요.');
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+    } else if (map) {
+      alert('이 브라우저는 지리적 위치 기능을 지원하지 않습니다.');
+    }
+  }
+
   // 컴포넌트 마운트
   onMount(() => {
     // Leaflet 지도 초기화
@@ -991,6 +1012,14 @@
 
   <!-- 제보 버튼 -->
   {#if !showReportForm}
+    <!-- 현재 위치 버튼 -->
+    <button
+      class="fixed bottom-24 right-8 z-[1000] bg-gray-700 hover:bg-gray-800 text-white rounded-full shadow-2xl p-4 flex items-center justify-center transition-all active:scale-95"
+      on:click={goToCurrentUserLocation}
+    >
+      <MapPin size={28} />
+    </button>
+
     <button
       class="fixed bottom-8 right-8 z-[1000] bg-red-600 hover:bg-red-700 text-white rounded-full shadow-2xl p-6 flex items-center gap-3 transition-all active:scale-95"
       on:click={() => showReportForm = true}
