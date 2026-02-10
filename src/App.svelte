@@ -1,8 +1,10 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import L from 'leaflet';
+  import 'leaflet-routing-machine';
   import { supabase } from './lib/supabase';
-  import { AlertTriangle, Camera, X, MapPin } from 'lucide-svelte';
+  import { analyzeRoutesWithAI } from './lib/gemini';
+  import { AlertTriangle, Camera, X, MapPin, Navigation, Route } from 'lucide-svelte';
 
   // 상태 변수
   let map = null;
@@ -16,6 +18,22 @@
   let watchId = null;
   let realtimeChannel = null;
 
+  // 네비게이션 관련
+  let showNavigationPanel = false;
+  let destinationAddress = '';
+  let destinationCoords = null;
+  let routingControl = null;
+  let currentRoute = null;
+  let routeHazards = [];
+  let isNavigating = false;
+  let alternativeRoutes = [];
+  let showRouteSelection = false;
+  let useSafeRoute = true; // 안전한 경로 사용 여부
+  let currentRouteIndex = 0; // 현재 사용 중인 경로 인덱스
+  let routeLine = null; // 경로 라인 (polyline)
+  let aiRecommendation = null; // Gemini AI 추천
+  let isAnalyzingWithAI = false; // AI 분석 중
+
   // 폼 데이터
   let reportType = 'pothole';
   let reportDescription = '';
@@ -24,13 +42,21 @@
   let isSubmitting = false;
 
   const hazardTypes = [
-    { value: 'pothole', label: '포트홀', color: '#ef4444' },
-    { value: 'rockfall', label: '낙석', color: '#f97316' },
-    { value: 'ice', label: '결빙', color: '#3b82f6' },
-    { value: 'flood', label: '침수', color: '#06b6d4' },
-    { value: 'accident', label: '사고', color: '#dc2626' },
-    { value: 'other', label: '기타', color: '#8b5cf6' }
+    { value: 'pothole', label: '포트홀', color: '#ef4444', severity: 3 },
+    { value: 'rockfall', label: '낙석', color: '#f97316', severity: 5 },
+    { value: 'ice', label: '결빙', color: '#3b82f6', severity: 4 },
+    { value: 'flood', label: '침수', color: '#06b6d4', severity: 5 },
+    { value: 'accident', label: '사고', color: '#dc2626', severity: 10 },
+    { value: 'other', label: '기타', color: '#8b5cf6', severity: 2 }
   ];
+
+  // 경로의 총 위험도 계산 (개수 x 심각도)
+  function calculateRouteDanger(hazards) {
+    return hazards.reduce((total, hazard) => {
+      const type = hazardTypes.find(t => t.value === hazard.type);
+      return total + (type?.severity || 1);
+    }, 0);
+  }
 
   // Haversine 공식으로 두 좌표 사이의 거리 계산 (미터 단위)
   function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -46,6 +72,74 @@
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
     return R * c; // 거리 (미터)
+  }
+
+  // 점과 선분 사이의 최단 거리 계산
+  function distanceToSegment(px, py, x1, y1, x2, y2) {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const lenSq = C * C + D * D;
+    let param = -1;
+
+    if (lenSq !== 0) param = dot / lenSq;
+
+    let xx, yy;
+
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+
+    return calculateDistance(px, py, xx, yy);
+  }
+
+  // 경로와 위험 지역 교차 체크
+  function checkRouteHazards(route) {
+    if (!route || !route.coordinates) return [];
+
+    const foundHazards = [];
+    const coordinates = route.coordinates;
+
+    hazards.forEach(hazard => {
+      let minDistance = Infinity;
+
+      // 경로의 각 선분에 대해 위험 지역까지의 최단 거리 계산
+      for (let i = 0; i < coordinates.length - 1; i++) {
+        const segStart = coordinates[i];
+        const segEnd = coordinates[i + 1];
+
+        const distance = distanceToSegment(
+          hazard.lat,
+          hazard.lng,
+          segStart.lat,
+          segStart.lng,
+          segEnd.lat,
+          segEnd.lng
+        );
+
+        minDistance = Math.min(minDistance, distance);
+      }
+
+      // 경로로부터 50m 이내에 위험 지역이 있으면 경고 (더 엄격하게)
+      if (minDistance <= 50) {
+        foundHazards.push({
+          ...hazard,
+          distanceFromRoute: Math.round(minDistance)
+        });
+      }
+    });
+
+    return foundHazards;
   }
 
   // 모든 위험 지역과의 거리 체크
@@ -74,7 +168,9 @@
     userLocation = { lat, lng };
 
     if (map) {
-      map.setView([lat, lng], map.getZoom());
+      if (!isNavigating) {
+        map.setView([lat, lng], map.getZoom());
+      }
 
       if (userMarker) {
         userMarker.setLatLng([lat, lng]);
@@ -181,6 +277,11 @@
     });
 
     checkProximityToHazards();
+
+    // 경로가 있으면 다시 체크
+    if (currentRoute) {
+      routeHazards = checkRouteHazards(currentRoute);
+    }
   }
 
   // 실시간 구독
@@ -196,10 +297,313 @@
         },
         (payload) => {
           console.log('실시간 업데이트:', payload);
-          loadHazards(); // 변경사항이 있으면 다시 로드
+          loadHazards();
         }
       )
       .subscribe();
+  }
+
+  // 주소를 좌표로 변환 (Nominatim API 사용)
+  async function geocodeAddress(address) {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=kr&limit=1`
+      );
+      const data = await response.json();
+
+      if (data.length > 0) {
+        return {
+          lat: parseFloat(data[0].lat),
+          lng: parseFloat(data[0].lon)
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error('주소 검색 오류:', error);
+      return null;
+    }
+  }
+
+  // 경로 토글 (안전 경로 ↔ 빠른 경로)
+  function toggleRoute() {
+    if (alternativeRoutes.length < 2) return;
+
+    // 가장 안전한 경로와 가장 빠른 경로 찾기
+    const safestRoute = alternativeRoutes.reduce((prev, curr) =>
+      curr.dangerScore < prev.dangerScore ? curr : prev
+    );
+    const fastestRoute = alternativeRoutes[0]; // 메인 경로가 가장 빠름
+
+    let selectedRoute;
+    if (useSafeRoute) {
+      selectedRoute = safestRoute;
+    } else {
+      selectedRoute = fastestRoute;
+    }
+
+    // 경로 정보 업데이트
+    currentRouteIndex = selectedRoute.index;
+    currentRoute = selectedRoute.route;
+    routeHazards = selectedRoute.hazards;
+
+    // 기존 routingControl의 경로 라인 숨기기
+    if (routingControl) {
+      const container = document.querySelector('.leaflet-routing-container');
+      if (container) container.style.display = 'none';
+    }
+
+    // 기존 커스텀 라인 제거
+    if (routeLine && map) {
+      map.removeLayer(routeLine);
+    }
+
+    // 새 경로 라인 그리기
+    const coords = selectedRoute.route.coordinates.map(c => [c.lat, c.lng]);
+    routeLine = L.polyline(coords, {
+      color: useSafeRoute ? '#10b981' : '#2563eb',
+      weight: 6,
+      opacity: 0.8
+    }).addTo(map);
+  }
+
+  // Routing Control 생성
+  function createRoutingControl(startLatLng, endLatLng) {
+    routingControl = L.Routing.control({
+      waypoints: [startLatLng, endLatLng],
+      routeWhileDragging: false,
+      addWaypoints: false,
+      alternatives: true, // 대체 경로 계산
+      altLineOptions: {
+        styles: [
+          { color: '#94a3b8', opacity: 0.6, weight: 5 }
+        ]
+      },
+      lineOptions: {
+        styles: [{ color: '#2563eb', opacity: 0.8, weight: 6 }]
+      },
+      createMarker: function(i, waypoint, n) {
+        if (i === 0) {
+          return L.marker(waypoint.latLng, {
+            icon: L.divIcon({
+              className: 'custom-marker',
+              html: '<div style="background: #3b82f6; width: 30px; height: 30px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            })
+          });
+        } else {
+          return L.marker(waypoint.latLng, {
+            icon: L.divIcon({
+              className: 'custom-marker',
+              html: '<div style="background: #ef4444; width: 30px; height: 30px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            })
+          });
+        }
+      }
+    }).addTo(map);
+
+    // 경로 계산 완료 시
+    routingControl.on('routesfound', function(e) {
+      const routes = e.routes;
+
+      // 모든 경로에 대해 위험 지역 체크
+      alternativeRoutes = routes.map((route, index) => {
+        const hazards = checkRouteHazards(route);
+        return {
+          route: route,
+          hazards: hazards,
+          dangerScore: calculateRouteDanger(hazards),
+          index: index
+        };
+      });
+
+      // 가장 안전한 경로 찾기 (위험도 점수가 가장 낮은 경로)
+      const safestRoute = alternativeRoutes.reduce((prev, curr) =>
+        curr.dangerScore < prev.dangerScore ? curr : prev
+      );
+
+      const mainRoute = alternativeRoutes[0];
+
+      // Gemini AI에게 경로 분석 요청 (비동기)
+      isAnalyzingWithAI = true;
+      analyzeRoutesWithAI(alternativeRoutes, hazardTypes).then(recommendation => {
+        aiRecommendation = recommendation;
+        isAnalyzingWithAI = false;
+
+        // AI 추천 경로 선택
+        if (recommendation.recommendedRoute !== undefined) {
+          const recommendedRoute = alternativeRoutes[recommendation.recommendedRoute];
+          if (recommendedRoute) {
+            // 추천 경로가 안전한 경로인지 판단
+            const safestRoute = alternativeRoutes.reduce((prev, curr) =>
+              curr.dangerScore < prev.dangerScore ? curr : prev
+            );
+            const isSafestRoute = recommendedRoute.index === safestRoute.index;
+
+            // 토글 상태를 AI 추천에 맞게 설정
+            useSafeRoute = isSafestRoute;
+
+            currentRouteIndex = recommendedRoute.index;
+            currentRoute = recommendedRoute.route;
+            routeHazards = recommendedRoute.hazards;
+
+            // 기존 경로 라인 제거
+            if (routeLine && map) {
+              map.removeLayer(routeLine);
+            }
+
+            // AI 추천 경로를 토글 색상으로 그리기
+            const coords = recommendedRoute.route.coordinates.map(c => [c.lat, c.lng]);
+            routeLine = L.polyline(coords, {
+              color: useSafeRoute ? '#10b981' : '#2563eb', // 초록색(안전) / 파란색(빠른)
+              weight: 6,
+              opacity: 0.8
+            }).addTo(map);
+
+            // AI 추천 알림
+            const routeType = useSafeRoute ? '🛡️ 안전 경로' : '⚡ 빠른 경로';
+            const alertMessage = `🤖 Gemini AI 추천\n\n` +
+              `추천: ${routeType} (경로 ${recommendation.recommendedRoute + 1})\n` +
+              `안전도: ${recommendation.safetyScore}/100점\n\n` +
+              `${recommendation.reason}` +
+              (recommendation.warning ? `\n\n⚠️ ${recommendation.warning}` : '');
+
+            alert(alertMessage);
+          }
+        }
+      }).catch(error => {
+        console.error('AI 분석 실패:', error);
+        isAnalyzingWithAI = false;
+        // 기본 로직으로 폴백
+        if (useSafeRoute && safestRoute.index !== mainRoute.index) {
+          currentRouteIndex = safestRoute.index;
+          currentRoute = safestRoute.route;
+          routeHazards = safestRoute.hazards;
+        } else {
+          currentRouteIndex = mainRoute.index;
+          currentRoute = mainRoute.route;
+          routeHazards = mainRoute.hazards;
+        }
+      });
+
+      // 일단 기본 경로 설정
+      let initialRoute;
+      if (useSafeRoute && safestRoute.index !== mainRoute.index) {
+        currentRouteIndex = safestRoute.index;
+        currentRoute = safestRoute.route;
+        routeHazards = safestRoute.hazards;
+        initialRoute = safestRoute;
+      } else {
+        currentRouteIndex = mainRoute.index;
+        currentRoute = mainRoute.route;
+        routeHazards = mainRoute.hazards;
+        initialRoute = mainRoute;
+      }
+
+      // 기존 routingControl의 경로 라인 숨기기
+      setTimeout(() => {
+        const container = document.querySelector('.leaflet-routing-container');
+        if (container) container.style.display = 'none';
+      }, 100);
+
+      // 초기 경로 라인 그리기 (AI 추천 전)
+      if (routeLine && map) {
+        map.removeLayer(routeLine);
+      }
+      const coords = initialRoute.route.coordinates.map(c => [c.lat, c.lng]);
+      routeLine = L.polyline(coords, {
+        color: useSafeRoute ? '#10b981' : '#2563eb',
+        weight: 6,
+        opacity: 0.8
+      }).addTo(map);
+
+      isNavigating = true;
+
+      // 메인 경로에 위험이 있고, 더 안전한 대체 경로가 있으면 알림
+      if (mainRoute.hazards.length > 0 && safestRoute.hazards.length < mainRoute.hazards.length) {
+        if (useSafeRoute) {
+          alert(
+            `✅ 안전한 우회 경로로 자동 변경되었습니다!\n\n` +
+            `빠른 경로: 위험 ${mainRoute.hazards.length}개 (위험도 ${mainRoute.dangerScore}점)\n` +
+            `안전 경로: 위험 ${safestRoute.hazards.length}개 (위험도 ${safestRoute.dangerScore}점)\n\n` +
+            `💡 네비게이션 패널에서 경로를 전환할 수 있습니다.`
+          );
+        } else {
+          const useAlternative = confirm(
+            `⚠️ 경고: 현재 경로에 ${mainRoute.hazards.length}개의 위험 지역이 있습니다! (위험도 ${mainRoute.dangerScore}점)\n\n` +
+            `더 안전한 우회 경로 (위험 ${safestRoute.hazards.length}개, 위험도 ${safestRoute.dangerScore}점)로 변경하시겠습니까?`
+          );
+
+          if (useAlternative) {
+            useSafeRoute = true;
+            currentRouteIndex = safestRoute.index;
+            currentRoute = safestRoute.route;
+            routeHazards = safestRoute.hazards;
+          }
+        }
+      } else if (mainRoute.hazards.length > 0) {
+        // 대체 경로도 위험하면 경고만 표시
+        const confirmed = confirm(
+          `⚠️ 경고: 경로 상에 ${mainRoute.hazards.length}개의 위험 지역이 있습니다!\n\n` +
+          `모든 경로에 위험이 있습니다. 계속 진행하시겠습니까?`
+        );
+
+        if (!confirmed) {
+          stopNavigation();
+        }
+      }
+    });
+  }
+
+  // 네비게이션 시작
+  async function startNavigation() {
+    if (!destinationAddress.trim()) {
+      alert('목적지를 입력해주세요!');
+      return;
+    }
+
+    const destination = await geocodeAddress(destinationAddress);
+
+    if (!destination) {
+      alert('목적지를 찾을 수 없습니다. 다시 시도해주세요.');
+      return;
+    }
+
+    destinationCoords = destination;
+
+    // 기존 경로 제거
+    if (routingControl) {
+      map.removeControl(routingControl);
+    }
+
+    // 새 경로 생성
+    createRoutingControl(
+      L.latLng(userLocation.lat, userLocation.lng),
+      L.latLng(destination.lat, destination.lng)
+    );
+  }
+
+  // 네비게이션 중지
+  function stopNavigation() {
+    if (routingControl && map) {
+      map.removeControl(routingControl);
+      routingControl = null;
+    }
+    if (routeLine && map) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+    currentRoute = null;
+    routeHazards = [];
+    alternativeRoutes = [];
+    isNavigating = false;
+    showRouteSelection = false;
+    destinationAddress = '';
+    destinationCoords = null;
+    useSafeRoute = true;
+    currentRouteIndex = 0;
   }
 
   // 이미지 파일 선택
@@ -328,6 +732,9 @@
     if (realtimeChannel) {
       supabase.removeChannel(realtimeChannel);
     }
+    if (routingControl && map) {
+      map.removeControl(routingControl);
+    }
     if (map) {
       map.remove();
     }
@@ -336,18 +743,29 @@
 
 <svelte:head>
   <title>실시간 도로 위험 제보</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
 </svelte:head>
 
 <main class="relative w-full h-full">
   <!-- 경고 상태 바 -->
   <div
     class="alert-bar absolute top-0 left-0 right-0 z-[1000] px-4 py-3 text-white text-center font-semibold shadow-lg"
-    style="background-color: {isNearHazard ? '#dc2626' : '#10b981'};"
+    style="background-color: {isNearHazard ? '#dc2626' : isNavigating && routeHazards.length > 0 ? '#f97316' : '#10b981'};"
   >
     {#if isNearHazard}
       <div class="flex items-center justify-center gap-2">
         <AlertTriangle size={24} />
         <span>⚠️ 주의! 위험 지역 {Math.round(nearestHazardDistance)}m 전방</span>
+      </div>
+    {:else if isNavigating && routeHazards.length > 0}
+      <div class="flex items-center justify-center gap-2">
+        <AlertTriangle size={20} />
+        <span>⚠️ 경로 상에 {routeHazards.length}개의 위험 지역 존재</span>
+      </div>
+    {:else if isNavigating}
+      <div class="flex items-center justify-center gap-2">
+        <Navigation size={20} />
+        <span>안전 경로로 안내 중</span>
       </div>
     {:else}
       <div class="flex items-center justify-center gap-2">
@@ -359,6 +777,219 @@
 
   <!-- 지도 컨테이너 -->
   <div id="map" class="w-full h-full"></div>
+
+  <!-- 경로 선택 모달 (사용 안 함) -->
+  {#if false && showRouteSelection && alternativeRoutes.length > 1}
+    <div class="fixed inset-0 bg-black/70 z-[1002] flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-2xl font-bold text-gray-900">🚨 경로 선택</h2>
+        </div>
+
+        <p class="text-gray-700 mb-6">
+          현재 경로에 <span class="font-bold text-red-600">{alternativeRoutes[0].hazards.length}개의 위험</span>이 있습니다.
+          {#if alternativeRoutes.some(r => r.hazards.length < alternativeRoutes[0].hazards.length)}
+            <br/>더 안전한 우회 경로를 선택하시겠습니까?
+          {/if}
+        </p>
+
+        <div class="space-y-3 mb-6">
+          {#each alternativeRoutes as altRoute, index}
+            <button
+              class="w-full p-4 border-2 rounded-xl text-left transition-all hover:shadow-lg"
+              class:border-red-500={altRoute.hazards.length > 0}
+              class:bg-red-50={altRoute.hazards.length > 0}
+              class:border-green-500={altRoute.hazards.length === 0}
+              class:bg-green-50={altRoute.hazards.length === 0}
+              class:border-blue-500={index === 0}
+              on:click={() => setRouteNavigation(index)}
+            >
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="font-semibold text-lg mb-1">
+                    {index === 0 ? '🔵 메인 경로' : `🔄 대체 경로 ${index}`}
+                  </h3>
+                  <div class="flex items-center gap-3 text-sm">
+                    <span class="text-gray-600">
+                      📏 {(altRoute.route.summary.totalDistance / 1000).toFixed(1)}km
+                    </span>
+                    <span class="text-gray-600">
+                      ⏱️ {Math.round(altRoute.route.summary.totalTime / 60)}분
+                    </span>
+                  </div>
+                </div>
+                <div class="text-right">
+                  {#if altRoute.hazards.length === 0}
+                    <span class="text-2xl">✅</span>
+                    <p class="text-xs text-green-700 font-medium">안전</p>
+                  {:else}
+                    <span class="text-2xl">⚠️</span>
+                    <p class="text-xs text-red-700 font-medium">{altRoute.hazards.length}개 위험</p>
+                  {/if}
+                </div>
+              </div>
+            </button>
+          {/each}
+        </div>
+
+        <button
+          class="w-full py-3 bg-gray-600 hover:bg-gray-700 text-white font-bold rounded-lg"
+          on:click={stopNavigation}
+        >
+          취소
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <!-- 네비게이션 버튼 -->
+  <button
+    class="fixed top-20 right-4 z-[1000] bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl p-4 transition-all active:scale-95"
+    on:click={() => showNavigationPanel = !showNavigationPanel}
+  >
+    <Route size={28} />
+  </button>
+
+  <!-- 네비게이션 패널 -->
+  {#if showNavigationPanel}
+    <div class="fixed top-24 inset-x-4 z-[1000] bg-white rounded-2xl shadow-2xl p-6 sm:max-w-md sm:right-4 sm:left-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-xl font-bold text-gray-900">경로 안내</h3>
+        <button
+          class="p-1 hover:bg-gray-100 rounded-full"
+          on:click={() => showNavigationPanel = false}
+        >
+          <X size={20} />
+        </button>
+      </div>
+
+      {#if !isNavigating}
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+              목적지 입력
+            </label>
+            <input
+              type="text"
+              bind:value={destinationAddress}
+              placeholder="예: 서울 강남구 역삼동"
+              class="w-full p-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+              on:keypress={(e) => e.key === 'Enter' && startNavigation()}
+            />
+          </div>
+          <button
+            class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-lg transition-all active:scale-98"
+            on:click={startNavigation}
+          >
+            <div class="flex items-center justify-center gap-2">
+              <Navigation size={20} />
+              <span>경로 안내 시작</span>
+            </div>
+          </button>
+        </div>
+      {:else}
+        <div class="space-y-4">
+          <div class="bg-blue-50 p-4 rounded-lg">
+            <p class="text-sm font-medium text-blue-900 mb-1">
+              📍 목적지로 안내 중
+            </p>
+            <p class="text-sm text-blue-700">
+              {destinationAddress}
+            </p>
+          </div>
+
+          <!-- 경로 전환 토글 -->
+          {#if alternativeRoutes.length > 1}
+            <div class="bg-white border-2 border-gray-200 rounded-lg p-4">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-semibold text-gray-900">
+                    {useSafeRoute ? '🛡️ 안전 경로' : '⚡ 빠른 경로'}
+                  </span>
+                </div>
+                <button
+                  class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  class:bg-green-600={useSafeRoute}
+                  class:bg-blue-600={!useSafeRoute}
+                  on:click={() => {
+                    useSafeRoute = !useSafeRoute;
+                    toggleRoute();
+                  }}
+                >
+                  <span
+                    class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                    class:translate-x-6={useSafeRoute}
+                    class:translate-x-1={!useSafeRoute}
+                  ></span>
+                </button>
+              </div>
+              <div class="text-xs text-gray-600">
+                {#if useSafeRoute}
+                  {@const safest = alternativeRoutes.reduce((prev, curr) => curr.dangerScore < prev.dangerScore ? curr : prev)}
+                  <p>✅ 위험 지역을 우회하는 경로</p>
+                  <p class="mt-1">위험: {safest.hazards.length}개 (위험도 {safest.dangerScore}점)</p>
+                {:else}
+                  <p>⚡ 가장 빠른 경로</p>
+                  <p class="mt-1">위험: {alternativeRoutes[0].hazards.length}개 (위험도 {alternativeRoutes[0].dangerScore}점)</p>
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          <!-- AI 분석 중 -->
+          {#if isAnalyzingWithAI}
+            <div class="bg-purple-50 p-4 rounded-lg border-2 border-purple-200">
+              <div class="flex items-center gap-2">
+                <div class="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-600"></div>
+                <p class="text-sm font-semibold text-purple-900">
+                  🤖 Gemini AI가 경로를 분석 중...
+                </p>
+              </div>
+            </div>
+          {/if}
+
+          <!-- AI 추천 정보 -->
+          {#if aiRecommendation && !isAnalyzingWithAI}
+            <div class="bg-purple-50 p-4 rounded-lg border-2 border-purple-200">
+              <p class="text-sm font-semibold text-purple-900 mb-2">
+                🤖 Gemini AI 추천
+              </p>
+              <div class="text-xs text-purple-700 space-y-1">
+                <p class="font-medium">안전도: {aiRecommendation.safetyScore}/100점</p>
+                <p>{aiRecommendation.reason}</p>
+                {#if aiRecommendation.warning}
+                  <p class="text-orange-700 font-medium mt-2">⚠️ {aiRecommendation.warning}</p>
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          {#if routeHazards.length > 0}
+            <div class="bg-orange-50 p-4 rounded-lg">
+              <p class="text-sm font-semibold text-orange-900 mb-2">
+                ⚠️ 경로 상 위험 지역 ({routeHazards.length}개)
+              </p>
+              <div class="space-y-2 max-h-32 overflow-y-auto">
+                {#each routeHazards as hazard}
+                  <div class="text-xs text-orange-700">
+                    • {hazardTypes.find(t => t.value === hazard.type)?.label || '기타'}:
+                    경로로부터 {hazard.distanceFromRoute}m
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
+
+          <button
+            class="w-full py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg shadow-lg transition-all active:scale-98"
+            on:click={stopNavigation}
+          >
+            안내 종료
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- 제보 버튼 -->
   {#if !showReportForm}
@@ -398,7 +1029,7 @@
             <label class="block text-lg font-semibold mb-3 text-gray-700">
               위험 유형
             </label>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {#each hazardTypes as type}
                 <button
                   class="p-4 border-2 rounded-lg font-medium transition-all"
@@ -497,5 +1128,14 @@
   :global(.custom-hazard-marker) {
     background: transparent;
     border: none;
+  }
+
+  :global(.custom-marker) {
+    background: transparent;
+    border: none;
+  }
+
+  :global(.leaflet-routing-container) {
+    display: none;
   }
 </style>
