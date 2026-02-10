@@ -4,7 +4,7 @@
   import 'leaflet-routing-machine';
   import { supabase } from './lib/supabase';
   import { analyzeRoutesWithAI } from './lib/gemini';
-  import { AlertTriangle, Camera, X, MapPin, Navigation, Route } from 'lucide-svelte';
+  import { AlertTriangle, Camera, X, MapPin, Navigation, Route, ShoppingBag } from 'lucide-svelte';
 
   // 상태 변수
   let map = null;
@@ -22,6 +22,59 @@
   let userPoints = 0;
   let showPointsGainModal = false;
   let pointsGainedMessage = '';
+
+  // 상품 거래 모달
+  let showShopModal = false;
+  let shopProducts = [
+    {
+      id: 1,
+      name: '피자 쿠폰',
+      image: '/src/assets/피자.jpg',
+      points: 150,
+      category: 'food',
+      description: '인기 피자 브랜드 할인 쿠폰'
+    },
+    {
+      id: 2,
+      name: '치킨 쿠폰',
+      image: '/src/assets/치킨.jpg',
+      points: 120,
+      category: 'food',
+      description: '맛있는 치킨 할인 쿠폰'
+    },
+    {
+      id: 3,
+      name: '베라 쿠폰',
+      image: '/src/assets/베라.webp',
+      points: 100,
+      category: 'food',
+      description: '베라 브랜드 할인 쿠폰'
+    },
+    {
+      id: 4,
+      name: '찜닭 쿠폰',
+      image: '/src/assets/찜닭.webp',
+      points: 130,
+      category: 'food',
+      description: '찜닭 맛집 할인 쿠폰'
+    },
+    {
+      id: 5,
+      name: '올리브영 상품권',
+      image: '/src/assets/올리브영상품권.jpg',
+      points: 200,
+      category: 'giftcard',
+      description: '올리브영 10,000원 상품권'
+    },
+    {
+      id: 6,
+      name: '문화상품권',
+      image: '/src/assets/문화상품권.jpg',
+      points: 180,
+      category: 'giftcard',
+      description: '문화상품권 10,000원권'
+    }
+  ];
 
   // 네비게이션 관련
 
@@ -626,6 +679,33 @@
     }
   }
 
+  // 상품 구매
+  function purchaseProduct(product) {
+    if (userPoints < product.points) {
+      alert(`포인트가 부족합니다! 필요: ${product.points}P, 현재: ${userPoints}P`);
+      return;
+    }
+
+    const confirmed = confirm(
+      `${product.name}을(를) ${product.points}P에 구매하시겠습니까?\n\n` +
+      `구매 후 남은 포인트: ${userPoints - product.points}P`
+    );
+
+    if (confirmed) {
+      userPoints -= product.points;
+      localStorage.setItem('userPoints', userPoints.toString());
+
+      pointsGainedMessage = `${product.name} 구매 완료! 🎉`;
+      showPointsGainModal = true;
+      setTimeout(() => {
+        showPointsGainModal = false;
+        pointsGainedMessage = '';
+      }, 3000);
+
+      alert(`${product.name} 구매가 완료되었습니다!\n남은 포인트: ${userPoints}P`);
+    }
+  }
+
   // 제보 제출
   async function submitReport() {
     if (!reportImage) {
@@ -1057,6 +1137,15 @@
       <MapPin size={28} />
     </button>
 
+    <!-- 상품 거래 버튼 -->
+    <button
+      class="fixed bottom-8 left-8 z-[1000] bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-2xl p-6 flex items-center gap-3 transition-all active:scale-95"
+      on:click={() => showShopModal = true}
+    >
+      <ShoppingBag size={32} />
+      <span class="text-xl font-bold">상품 거래</span>
+    </button>
+
     <button
       class="fixed bottom-8 right-8 z-[1000] bg-red-600 hover:bg-red-700 text-white rounded-full shadow-2xl p-6 flex items-center gap-3 transition-all active:scale-95"
       on:click={() => showReportForm = true}
@@ -1187,9 +1276,100 @@
     </div>
   {/if}
 
+  <!-- 상품 거래 모달 -->
+  {#if showShopModal}
+    <div class="fixed inset-0 bg-black/50 z-[1001] flex items-end sm:items-center justify-center">
+      <div class="bg-white w-full sm:max-w-4xl sm:rounded-t-2xl rounded-t-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <!-- 헤더 -->
+        <div class="sticky top-0 bg-white border-b px-6 py-4 flex items-center justify-between">
+          <div>
+            <h2 class="text-2xl font-bold text-gray-900">상품 거래소</h2>
+            <p class="text-sm text-gray-600 mt-1">
+              내 포인트: <span class="text-blue-600 font-bold text-lg">{userPoints}P</span>
+            </p>
+          </div>
+          <button
+            class="p-2 hover:bg-gray-100 rounded-full transition-colors"
+            on:click={() => showShopModal = false}
+          >
+            <X size={24} />
+          </button>
+        </div>
+
+        <!-- 상품 목록 -->
+        <div class="p-6">
+          <div class="mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">🍕 음식 쿠폰</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {#each shopProducts.filter(p => p.category === 'food') as product}
+                <div class="bg-white border-2 border-gray-200 rounded-xl overflow-hidden hover:border-blue-400 transition-all hover:shadow-lg">
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    class="w-full h-48 object-cover"
+                  />
+                  <div class="p-4">
+                    <h4 class="font-bold text-lg text-gray-900 mb-1">{product.name}</h4>
+                    <p class="text-sm text-gray-600 mb-3">{product.description}</p>
+                    <div class="flex items-center justify-between">
+                      <span class="text-xl font-bold text-blue-600">{product.points}P</span>
+                      <button
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={userPoints < product.points}
+                        on:click={() => purchaseProduct(product)}
+                      >
+                        {userPoints < product.points ? '포인트 부족' : '구매하기'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+
+          <div>
+            <h3 class="text-lg font-semibold text-gray-900 mb-4">🎁 상품권</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {#each shopProducts.filter(p => p.category === 'giftcard') as product}
+                <div class="bg-white border-2 border-gray-200 rounded-xl overflow-hidden hover:border-blue-400 transition-all hover:shadow-lg">
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    class="w-full h-48 object-cover"
+                  />
+                  <div class="p-4">
+                    <h4 class="font-bold text-lg text-gray-900 mb-1">{product.name}</h4>
+                    <p class="text-sm text-gray-600 mb-3">{product.description}</p>
+                    <div class="flex items-center justify-between">
+                      <span class="text-xl font-bold text-blue-600">{product.points}P</span>
+                      <button
+                        class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={userPoints < product.points}
+                        on:click={() => purchaseProduct(product)}
+                      >
+                        {userPoints < product.points ? '포인트 부족' : '구매하기'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          </div>
+
+          <!-- 포인트 안내 -->
+          <div class="mt-6 bg-blue-50 p-4 rounded-lg border border-blue-200">
+            <p class="text-sm text-blue-900">
+              💡 <strong>포인트 적립 방법:</strong> 도로 위험을 제보하면 10P를 획득할 수 있습니다!
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- 포인트 획득 모달 -->
   {#if showPointsGainModal}
-    <div class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[1001] bg-green-500 text-white px-8 py-5 rounded-lg shadow-xl text-3xl font-bold animate-fade-in-out">
+    <div class="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[1002] bg-green-500 text-white px-8 py-5 rounded-lg shadow-xl text-3xl font-bold animate-fade-in-out">
       {pointsGainedMessage}
     </div>
   {/if}

@@ -6,7 +6,8 @@
       "Bash(npm install:*)",
       "Bash(powershell -Command \"\\(New-Object Net.WebClient\\).DownloadFile\\(''https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe'', ''$env:Temp\\\\GoogleCloudSDKInstaller.exe''\\)\")",
       "Bash(curl:*)",
-      "Bash(start %TEMP%GoogleCloudSDKInstaller.exe)"
+      "Bash(start %TEMP%GoogleCloudSDKInstaller.exe)",
+      "Bash(timeout:*)"
     ]
   }
 }
